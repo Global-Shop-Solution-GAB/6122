@@ -1,0 +1,169 @@
+﻿Program.Sub.Preflight.Start
+v.Global.sEmp.Declare(String,"99999")
+
+
+Program.External.Include.Library("JB0455.LIB",False)
+Program.Sub.Preflight.End
+
+Program.Sub.Main.Start
+f.Intrinsic.Control.Try
+v.Local.sError.Declare
+
+v.Local.sTest.Declare
+
+
+
+f.Intrinsic.Control.SelectCase(v.Caller.Hook)
+	f.Intrinsic.Control.Case("15881")
+		'called from Process button on single job OLS003 (GUI)
+		f.Intrinsic.Control.CallSub(update)
+		
+	f.Intrinsic.Control.Case("15915")
+		'called from Process button on Update Multiple Jobs OLS003M screen (GUI)
+		f.Intrinsic.Control.CallSub(update)
+		
+'	f.Intrinsic.Control.Case("50620")
+'		'calleld from Process button on single job OLS003 (SFDC)
+'		
+'	F.Intrinsic.Control.Case("50735")
+'		'called from the Process button on multiple jobs OLS003M (SFDC)
+		
+f.Intrinsic.Control.EndSelect
+
+
+F.Intrinsic.Control.End
+
+f.Intrinsic.Control.catch
+	f.Intrinsic.Control.CallSub(Catching,"sub",v.Ambient.CurrentSubroutine,"errorno",v.Ambient.ErrorNumber,"errordesc",v.Ambient.ErrorDescription)
+	f.Intrinsic.Control.CallSub(unload)
+f.Intrinsic.Control.EndTry	
+Program.Sub.Main.End
+
+Program.Sub.Catching.Start
+v.Local.sError.declare(string)
+F.Intrinsic.String.Build("Project: {0}{1}Subroutine: {2}{1}Error Occurred {3} with description {4}","7020.lib",V.Ambient.NewLine,v.Args.sub,V.Args.errorno,V.args.errordesc,V.Local.sError)
+f.Intrinsic.UI.Msgbox(v.Local.sError)
+Program.Sub.Catching.End
+
+Program.Sub.unload.Start
+f.Intrinsic.Control.End
+Program.Sub.unload.End
+
+Program.Sub.update.Start
+f.Intrinsic.Control.Try
+v.Local.sError.Declare
+v.Local.sSql.Declare
+v.Local.sRet.Declare
+
+
+
+'check the job operation to see what the op code is.  If it's not = 'BKFL', there's nothing to do.
+f.ODBC.Connection!core.opencompanyconnection
+f.Intrinsic.String.Build("select operation from v_job_operations where job = '{0}' and suffix = '{1}' and seq = '{2}'",v.Passed.009990.Trim,v.Passed.009991.Trim,v.Passed.009992.Trim,v.Local.sSql)
+f.ODBC.Connection!core.ExecuteAndReturn(v.Local.sSql,v.Local.sRet)
+
+f.Intrinsic.Control.If(v.Local.sRet.Trim,=,"BKFL")
+	'if the opcode is 'BKFL' then we have to retrieve data for all the operations previous to this operation.
+	f.Intrinsic.String.Build("select seq, operation, part as wc, flag_set_up, units * ({0} + {1}) as hours, setup, units_open as open, units_complete as complete, flag_closed, HOURS_ACTUAL from v_job_operations where job = '{2}' and suffix = '{3}' and seq < '{4}' and LMO = 'L' and TASK_SEQ <> 'T' and FLAG_CLOSED <> 'Y' order by seq desc",v.Passed.000001,v.Passed.000002,v.Passed.009990.Trim,v.Passed.009991.Trim,v.Passed.009992.Trim,v.Local.sSql)
+	'create a datatable of the return to loop through
+	f.Data.Datatable.CreateFromSQL("ops","core",v.Local.sSql,True)
+	
+	f.Intrinsic.Control.If(v.DataTable.ops.RowCount,>,0)
+		f.Intrinsic.Control.CallSub(build_records)
+		
+		f.Intrinsic.Control.CallSub(JB0455Sync)
+	f.Intrinsic.Control.EndIf
+f.Intrinsic.Control.EndIf
+
+F.ODBC.Connection!core.Close
+
+f.Intrinsic.Control.CallSub(unload)
+
+
+f.Intrinsic.Control.catch
+	f.Intrinsic.Control.CallSub(Catching,"sub",v.Ambient.CurrentSubroutine,"errorno",v.Ambient.ErrorNumber,"errordesc",v.Ambient.ErrorDescription)
+	f.Intrinsic.Control.CallSub(unload)
+f.Intrinsic.Control.EndTry
+Program.Sub.update.End
+
+Program.Sub.build_records.Start
+f.Intrinsic.Control.Try
+v.Local.sError.Declare
+v.Local.fHours.Declare
+v.Local.sSetUp.Declare
+v.Local.sDate.Declare
+v.local.sGood.Declare
+v.Local.iParts.Declare
+v.Local.iCount.Declare
+v.Local.sClosed.Declare
+v.Local.bEmp.Declare
+
+'CHECK THE OP CODE IN THE LABOR SEQUENCE, MATCH TO EMPLOYEE MASTER, IF NO MATCH, SKIP.
+
+
+	'loop through the datatable and create backflush records for each opertion until we run in to another "BKFL"
+	f.Intrinsic.Control.For(v.Local.iCount,0,v.DataTable.ops.RowCount--,1)
+			f.Intrinsic.Control.If(v.DataTable.ops(v.Local.iCount).operation!fieldvaltrim,<>,"BKFL")
+				'check the op code to see if it matches an employee number
+				f.Intrinsic.control.CallSub(check_employee,"EMP",v.DataTable.ops(v.Local.iCount).operation!fieldvaltrim)
+				f.Intrinsic.Variable.ArgExists("EMP",v.Local.bEmp)
+				f.Intrinsic.Control.If(v.Local.bEmp)
+					v.Global.sEmp.Set(v.Args.emp.Trim)
+				
+					F.Intrinsic.Math.Round(V.DataTable.ops(V.Local.iCount).hours!fieldval,2,1,v.Local.fHours)
+					f.Intrinsic.String.Format(v.Ambient.Date,"MMDDYY",V.Local.sDate)
+					'if this is a setup line, treat it differently
+					F.Intrinsic.Control.If(v.DataTable.ops(v.Local.iCount).flag_set_up!fieldvaltrim,=,"Y",AND,V.DataTable.ops(V.Local.iCount).HOURS_ACTUAL!FIELDVALLONG,=,0)
+						V.Local.sClosed.Set("N")
+						V.Local.sSetUp.Set(V.DataTable.ops(V.Local.iCount).setup!fieldvalstring)
+						V.Local.sGood.Set("00000")
+						f.Data.Datatable.AddRow("JB0455","Date",v.Local.sDate,"Employee",V.Global.sEmp,"Job",V.Passed.009990.Trim,"Suffix",V.Passed.009991.Trim,"Seq",v.DataTable.ops(v.Local.iCount).seq!fieldvaltrim,"WC",v.DataTable.ops(v.Local.iCount).wc!fieldvaltrim,"Hours",v.Local.sSetUp,"Closed",v.Local.sClosed,"Indirect","D","RateType","R","GoodPcs",v.local.sGood,"ScrapPcs",0,"Reason",0)
+					F.Intrinsic.Control.Endif
+					
+					'it's not a setup line so calculate pieces already completed + pieces for this op and see if that's > than open quantity.
+					f.Intrinsic.Math.Add(v.Passed.000001,v.DataTable.ops(v.Local.iCount).complete!fieldval,v.Local.iParts)
+					f.Intrinsic.Control.IIf(v.Local.iParts,>=,v.DataTable.ops(v.Local.iCount).open!fieldvallong,"Y","N",v.Local.sClosed)
+					f.Intrinsic.Math.Mult(v.Passed.000001.Long,10000,v.Local.sGood)
+					
+					'add the line to the datatable
+					f.Data.Datatable.AddRow("JB0455","Date",v.Local.sDate,"Employee",V.Global.sEmp,"Job",V.Passed.009990.Trim,"Suffix",V.Passed.009991.Trim,"Seq",v.DataTable.ops(v.Local.iCount).seq!fieldvaltrim,"WC",v.DataTable.ops(v.Local.iCount).wc!fieldvaltrim,"Hours",v.Local.fHours,"Closed",v.Local.sClosed,"Indirect","D","RateType","R","GoodPcs",v.local.sGood,"ScrapPcs",0,"Reason",0)
+				f.Intrinsic.Control.EndIf
+			F.Intrinsic.Control.Else
+				'we hit the next BKFL backflush OP Code
+				F.Intrinsic.Control.ExitFor(V.Local.iCount)
+			f.Intrinsic.Control.EndIf
+	f.Intrinsic.Control.Next(v.Local.iCount)
+
+
+f.Intrinsic.Control.catch
+	f.Intrinsic.Control.CallSub(Catching,"sub",v.Ambient.CurrentSubroutine,"errorno",v.Ambient.ErrorNumber,"errordesc",v.Ambient.ErrorDescription)
+	f.Intrinsic.Control.CallSub(unload)
+f.Intrinsic.Control.EndTry
+Program.Sub.build_records.End
+
+Program.Sub.check_employee.Start
+f.Intrinsic.Control.Try
+v.Local.sError.Declare
+v.Local.sRet.Declare
+v.Local.sSql.Declare
+
+'checking to see if the op code used in the record matches an employee number.  If it does, then we pass it back and create backflush records.
+f.Intrinsic.String.Build("select employee from employee_mstr where employee = '{0}'",v.Args.EMP.Trim,v.Local.sSql)
+f.ODBC.Connection!con.ExecuteAndReturn(v.Local.sSql,v.Local.sRet)
+f.Intrinsic.Control.If(v.Local.sRet.IsNotNullOrWhiteSpace)
+	f.Intrinsic.Variable.AddRV("EMP",v.Local.sRet)
+f.Intrinsic.Control.EndIf
+
+
+
+f.Intrinsic.Control.catch
+	f.Intrinsic.Control.CallSub(Catching,"sub",v.Ambient.CurrentSubroutine,"errorno",v.Ambient.ErrorNumber,"errordesc",v.Ambient.ErrorDescription)
+	f.Intrinsic.Control.CallSub(unload)
+f.Intrinsic.Control.EndTry
+Program.Sub.check_employee.End
+
+Program.Sub.Comments.Start
+${$5$}$3.0.0.0$}$1
+${$6$}$dfinch$}$20201105075349865$}$2O16bu3pcn8yPLUxA6F2Klx+ibLK1MdjFcNyvYwns4r+U1XiB/aFaKHAm6bCHGtc1nK6WwlRdOE=
+Program.Sub.Comments.End
+
